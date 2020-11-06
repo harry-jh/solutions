@@ -1,12 +1,21 @@
 // Set the ID of the team calendar to add events to. You can find the calendar's
 // ID on the settings page.
-var TEAM_CALENDAR_ID = 'ENTER_TEAM_CALENDAR_ID_HERE';
+var TEAM_CALENDAR_ID = "TEAM_CALENDAR_ID";
 // Set the email address of the Google Group that contains everyone in the team.
 // Ensure the group has less than 500 members to avoid timeouts.
-var GROUP_EMAIL = 'ENTER_GOOGLE_GROUP_EMAIL_HERE';
+var GROUP_EMAIL = "TEAM_EMAIL";
 
-var KEYWORDS = ['vacation', 'ooo', 'out of office', 'offline'];
+var KEYWORDS = [
+  "holiday",
+  "ooo",
+  "out of office",
+  "offline",
+  "annual leave",
+  "al",
+];
 var MONTHS_IN_ADVANCE = 3;
+
+//
 
 /**
  * Setup the script to run automatically every hour.
@@ -14,9 +23,9 @@ var MONTHS_IN_ADVANCE = 3;
 function setup() {
   var triggers = ScriptApp.getProjectTriggers();
   if (triggers.length > 0) {
-    throw new Error('Triggers are already setup.');
+    throw new Error("Triggers are already setup.");
   }
-  ScriptApp.newTrigger('sync').timeBased().everyHours(1).create();
+  ScriptApp.newTrigger("sync").timeBased().everyHours(1).create();
   // Run the first sync immediately.
   sync();
 }
@@ -32,7 +41,7 @@ function sync() {
   maxDate.setMonth(maxDate.getMonth() + MONTHS_IN_ADVANCE);
 
   // Determine the time the the script was last run.
-  var lastRun = PropertiesService.getScriptProperties().getProperty('lastRun');
+  var lastRun = PropertiesService.getScriptProperties().getProperty("lastRun");
   lastRun = lastRun ? new Date(lastRun) : null;
 
   // Get the list of users in the Google Group.
@@ -42,19 +51,19 @@ function sync() {
   // summary in the specified date range. Import each of those to the team
   // calendar.
   var count = 0;
-  users.forEach(function(user) {
-    var username = user.getEmail().split('@')[0];
-    KEYWORDS.forEach(function(keyword) {
+  users.forEach(function (user) {
+    var username = user.getEmail().split("@")[0];
+    KEYWORDS.forEach(function (keyword) {
       var events = findEvents(user, keyword, today, maxDate, lastRun);
-      events.forEach(function(event) {
+      events.forEach(function (event) {
         importEvent(username, event);
         count++;
       }); // End foreach event.
     }); // End foreach keyword.
   }); // End foreach user.
 
-  PropertiesService.getScriptProperties().setProperty('lastRun', today);
-  console.log('Imported ' + count + ' events');
+  PropertiesService.getScriptProperties().setProperty("lastRun", today);
+  console.log("Imported " + count + " events");
 }
 
 /**
@@ -64,17 +73,48 @@ function sync() {
  * @param {Calendar.Event} event The event to import.
  */
 function importEvent(username, event) {
-  event.summary = '[' + username + '] ' + event.summary;
+  //event.summary = '[' + username + '] ' + event.summary; // We usally add our names into the event anyway
   event.organizer = {
     id: TEAM_CALENDAR_ID,
   };
   event.attendees = [];
-  console.log('Importing: %s', event.summary);
+  console.log("Importing: %s", event.summary);
   try {
     Calendar.Events.import(event, TEAM_CALENDAR_ID);
   } catch (e) {
-    console.error('Error attempting to import event: %s. Skipping.',
-        e.toString());
+    console.error(
+      "Error attempting to import event: %s. Skipping.",
+      e.toString()
+    );
+  }
+}
+
+/**
+ * Imports an event set to the 'Out of Office' room.
+ * @param {Calendar.Event} event The original Out of Office event.
+ */
+function importOutOfOfficeEvent(userEmail, event) {
+  console.log("Creating out of office event for: %s", event.summary);
+
+  var testEvent = CalendarApp.getEventById(event.getId());
+  CalendarApp.getCalendarById(userEmail);
+
+  var newEvent = CalendarApp.getCalendarById(
+    userEmail
+  ).createEvent(
+    testEvent.getTitle(),
+    testEvent.getStartTime(),
+    testEvent.getEndTime(),
+    { location: "Out of Office" }
+  );
+
+  try {
+    //Calendar.Events.import(newEvent, 'harry.hornby@caplin.com'); // Temporary
+  } catch (e) {
+    console.error(
+      "Error attempting to import event: %s. Skipping.",
+      e.toString()
+    );
   }
 }
 
@@ -94,7 +134,7 @@ function findEvents(user, keyword, start, end, optSince) {
     q: keyword,
     timeMin: formatDateAsRFC3339(start),
     timeMax: formatDateAsRFC3339(end),
-    showDeleted: true,
+    showDeleted: false,
   };
   if (optSince) {
     // This prevents the script from examining events that have not been
@@ -110,13 +150,19 @@ function findEvents(user, keyword, start, end, optSince) {
     try {
       response = Calendar.Events.list(user.getEmail(), params);
     } catch (e) {
-      console.error('Error retriving events for %s, %s: %s; skipping',
-          user, keyword, e.toString());
+      console.error(
+        "Error retriving events for %s, %s: %s; skipping",
+        user,
+        keyword,
+        e.toString()
+      );
       continue;
     }
-    events = events.concat(response.items.filter(function(item) {
-      return shoudImportEvent(user, keyword, item);
-    }));
+    events = events.concat(
+      response.items.filter(function (item) {
+        return shoudImportEvent(user, keyword, item);
+      })
+    );
     pageToken = response.nextPageToken;
   } while (pageToken);
   return events;
@@ -134,19 +180,33 @@ function shoudImportEvent(user, keyword, event) {
   // Filter out events where the keyword did not appear in the summary
   // (that is, the keyword appeared in a different field, and are thus
   // is not likely to be relevant).
-  if (event.summary.toLowerCase().indexOf(keyword.toLowerCase()) < 0) {
+  if (event.summary.toLowerCase().indexOf(keyword) < 0) {
     return false;
   }
+
+  // If the event is an Out of Office event create an event in the users calendar with the room set to 'Out of Office'
+  // Out of Office events are missing the transparency property
+  if (event.transparency == undefined) {
+    importOutOfOfficeEvent(user.getEmail(), event);
+  }
+
+  if (event.location == "Out of Office") {
+    return false;
+  }
+
   if (!event.organizer || event.organizer.email == user.getEmail()) {
     // If the user is the creator of the event, always import it.
     return true;
   }
+
   // Only import events the user has accepted.
   if (!event.attendees) return false;
-  var matching = event.attendees.filter(function(attendee) {
+  var matching = event.attendees.filter(function (attendee) {
     return attendee.self;
   });
-  return matching.length > 0 && matching[0].responseStatus == 'accepted';
+
+  // Don't import
+  return matching.length > 0 && matching[0].responseStatus == "accepted";
 }
 
 /**
@@ -156,5 +216,5 @@ function shoudImportEvent(user, keyword, event) {
  * @return {string} a formatted date string.
  */
 function formatDateAsRFC3339(date) {
-  return Utilities.formatDate(date, 'UTC', 'yyyy-MM-dd\'T\'HH:mm:ssZ');
+  return Utilities.formatDate(date, "UTC", "yyyy-MM-dd'T'HH:mm:ssZ");
 }
